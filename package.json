@@ -1,0 +1,21 @@
+{
+  "name": "trading-bot",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Binance Testnet crypto scalping bot with Claude-ranked signals",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.32.1",
+    "better-sqlite3": "^11.3.0",
+    "dotenv": "^16.4.5",
+    "express": "^4.21.1",
+    "undici": "^6.21.0",
+    "ws": "^8.18.0"
+  }
+}
