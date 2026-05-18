@@ -3,23 +3,35 @@
 <head>
 <meta charset="utf-8" />
 <title>binance_bot dashboard</title>
+<script src="https://unpkg.com/lightweight-charts@4.2.0/dist/lightweight-charts.standalone.production.js"></script>
 <style>
   :root { color-scheme: dark; }
-  body { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; background:#0d1117; color:#c9d1d9; margin:0; padding:16px; }
-  h1 { font-size:18px; margin:0 0 12px; color:#58a6ff; }
-  h2 { font-size:13px; margin:0 0 8px; color:#8b949e; letter-spacing:.05em; text-transform:uppercase; }
-  .grid { display:grid; grid-template-columns: 1fr 1fr; gap:16px; }
-  .card { background:#161b22; border:1px solid #30363d; border-radius:6px; padding:12px; }
-  table { width:100%; border-collapse:collapse; font-size:12px; }
-  th, td { padding:4px 8px; text-align:left; border-bottom:1px solid #21262d; }
-  th { color:#8b949e; font-weight:500; }
-  .pos { color:#3fb950; } .neg { color:#f85149; } .muted { color:#6e7681; }
-  .pill { display:inline-block; padding:2px 6px; border-radius:10px; font-size:11px; background:#21262d; }
-  .pill.paused { background:#5d1f1f; color:#ffb4b4; }
-  .pill.live { background:#1f4d2f; color:#9fffb4; }
-  .header { display:flex; justify-content:space-between; align-items:center; margin-bottom:16px; }
+  body { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; background:#0d1117; color:#c9d1d9; margin:0; padding:14px; }
+  h1 { font-size:16px; margin:0; color:#58a6ff; }
+  h2 { font-size:11px; margin:0 0 6px; color:#8b949e; letter-spacing:.05em; text-transform:uppercase; }
+  .header { display:flex; justify-content:space-between; align-items:center; margin-bottom:12px; }
   .meta { font-size:12px; color:#8b949e; }
+  .cards { display:grid; grid-template-columns: repeat(6, 1fr); gap:10px; margin-bottom:14px; }
+  .card { background:#161b22; border:1px solid #30363d; border-radius:6px; padding:10px; }
+  .card .label { font-size:10px; color:#8b949e; letter-spacing:.05em; text-transform:uppercase; }
+  .card .value { font-size:18px; margin-top:4px; }
+  .pos { color:#3fb950; } .neg { color:#f85149; } .muted { color:#6e7681; }
+  .pill { display:inline-block; padding:2px 8px; border-radius:10px; font-size:11px; background:#21262d; }
+  .pill.paused { background:#5d1f1f; color:#ffb4b4; }
+  .pill.quiet { background:#3a3a1c; color:#ffe9a3; }
+  .pill.live { background:#1f4d2f; color:#9fffb4; }
+  .grid { display:grid; grid-template-columns: repeat(3, 1fr); grid-template-rows: repeat(2, auto); gap:10px; margin-bottom:14px; }
+  .chart-card { background:#161b22; border:1px solid #30363d; border-radius:6px; padding:8px; }
+  .chart-card-header { display:flex; justify-content:space-between; font-size:12px; margin-bottom:6px; }
+  .chart-card-pair { color:#58a6ff; font-weight:600; }
+  .chart-host { height:220px; }
+  .tables { display:grid; grid-template-columns: 1fr 1.2fr; gap:12px; }
+  .panel { background:#161b22; border:1px solid #30363d; border-radius:6px; padding:10px; }
+  table { width:100%; border-collapse:collapse; font-size:12px; }
+  th, td { padding:4px 6px; text-align:left; border-bottom:1px solid #21262d; white-space:nowrap; }
+  th { color:#8b949e; font-weight:500; }
   .scroll { max-height:340px; overflow:auto; }
+  .reason { max-width:200px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:#8b949e; }
 </style>
 </head>
 <body>
@@ -28,87 +40,145 @@
   <div class="meta" id="meta">connecting...</div>
 </div>
 
-<div class="grid">
-  <div class="card">
+<div class="cards">
+  <div class="card"><div class="label">Balance</div><div class="value" id="card-equity">-</div></div>
+  <div class="card"><div class="label">Realized Today</div><div class="value" id="card-realized">-</div></div>
+  <div class="card"><div class="label">Unrealized</div><div class="value" id="card-unrealized">-</div></div>
+  <div class="card"><div class="label">Win Rate</div><div class="value" id="card-winrate">-</div></div>
+  <div class="card"><div class="label">Daily Trades</div><div class="value" id="card-trades">-</div></div>
+  <div class="card"><div class="label">Status</div><div class="value" id="card-status">-</div></div>
+</div>
+
+<div class="grid" id="chart-grid"></div>
+
+<div class="tables">
+  <div class="panel">
     <h2>Open Positions</h2>
     <div class="scroll"><table id="positions"><thead><tr>
-      <th>pair</th><th>strategy</th><th>side</th><th>qty</th><th>entry</th><th>last</th><th>uPnL</th><th>uPnL %</th>
+      <th>pair</th><th>strat</th><th>entry</th><th>last</th><th>uPnL</th><th>%</th>
     </tr></thead><tbody></tbody></table></div>
   </div>
-
-  <div class="card">
-    <h2>P&amp;L per Pair</h2>
-    <table id="pnl"><thead><tr>
-      <th>pair</th><th>closed</th><th>today</th><th>all-time</th>
-    </tr></thead><tbody></tbody></table>
-  </div>
-
-  <div class="card">
-    <h2>Win Rate</h2>
-    <div id="winrate"></div>
-    <h2 style="margin-top:12px;">By Strategy</h2>
-    <table id="wrstrat"><thead><tr>
-      <th>strategy</th><th>wins</th><th>losses</th><th>total</th><th>win %</th>
-    </tr></thead><tbody></tbody></table>
-  </div>
-
-  <div class="card">
-    <h2>Trade Log (last 50)</h2>
+  <div class="panel">
+    <h2>Trade History (last 50)</h2>
     <div class="scroll"><table id="trades"><thead><tr>
-      <th>id</th><th>pair</th><th>strat</th><th>side</th><th>entry</th><th>exit</th><th>pnl</th><th>status</th>
+      <th>id</th><th>pair</th><th>strat</th><th>entry</th><th>exit</th><th>pnl</th><th>status</th><th>reason</th>
     </tr></thead><tbody></tbody></table></div>
   </div>
 </div>
 
 <script>
-const $ = (sel) => document.querySelector(sel);
+const PAIRS = ['BTCUSDT','ETHUSDT','SOLUSDT','BNBUSDT','DOGEUSDT','XRPUSDT'];
+const $ = (s) => document.querySelector(s);
 function pn(n, d=4) { if (n==null||isNaN(n)) return '-'; return Number(n).toFixed(d); }
-function pct(n) { if (n==null||isNaN(n)) return '-'; return (Number(n)*100).toFixed(3)+'%'; }
 function cls(n) { if (n==null||isNaN(n)) return 'muted'; return n>0?'pos':(n<0?'neg':'muted'); }
 
-function render(s) {
-  const base = s.risk.base_equity;
-  const dailyPct = (s.risk.daily_pnl_pct*100).toFixed(2);
-  const pausedPill = s.risk.paused ? '<span class="pill paused">PAUSED</span>' : '<span class="pill live">LIVE</span>';
-  $('#meta').innerHTML = `${pausedPill} equity ${base?base.toFixed(2):'-'} USDT &middot; today ${dailyPct}% &middot; size ${s.risk.position_size_usd?.toFixed(2)} USDT &middot; ${new Date(s.ts).toLocaleTimeString()}`;
+const charts = {};
+const series = {};
+const seenMarkers = {};
 
-  const pos = s.open_positions.map(p => `<tr>
-    <td>${p.pair}</td><td>${p.strategy}</td><td>${p.side}</td>
-    <td>${pn(p.qty,6)}</td><td>${pn(p.entry_price)}</td><td>${pn(p.last_price)}</td>
-    <td class="${cls(p.unrealized_pnl)}">${pn(p.unrealized_pnl,4)}</td>
-    <td class="${cls(p.unrealized_pnl_pct)}">${p.unrealized_pnl_pct!=null?p.unrealized_pnl_pct.toFixed(3)+'%':'-'}</td>
-  </tr>`).join('') || '<tr><td colspan="8" class="muted">no open positions</td></tr>';
-  $('#positions tbody').innerHTML = pos;
+function buildChartCard(pair) {
+  const card = document.createElement('div');
+  card.className = 'chart-card';
+  card.innerHTML = `
+    <div class="chart-card-header">
+      <span class="chart-card-pair">${pair}</span>
+      <span id="price-${pair}" class="muted">-</span>
+    </div>
+    <div class="chart-host" id="chart-${pair}"></div>
+  `;
+  $('#chart-grid').appendChild(card);
 
-  const allPairsMap = Object.fromEntries(s.pnl_by_pair.map(r => [r.pair, r]));
-  const pnlRows = s.pairs.map(pair => {
-    const r = allPairsMap[pair] || { closed_count:0, realized_pnl_today:0, realized_pnl:0 };
-    return `<tr>
-      <td>${pair}</td><td>${r.closed_count||0}</td>
-      <td class="${cls(r.realized_pnl_today)}">${pn(r.realized_pnl_today||0,4)}</td>
-      <td class="${cls(r.realized_pnl)}">${pn(r.realized_pnl||0,4)}</td>
-    </tr>`;
-  }).join('');
-  $('#pnl tbody').innerHTML = pnlRows;
+  const host = card.querySelector('.chart-host');
+  const chart = LightweightCharts.createChart(host, {
+    layout: { background: { color: '#161b22' }, textColor: '#c9d1d9', fontSize: 10 },
+    grid: { vertLines: { color: '#21262d' }, horzLines: { color: '#21262d' } },
+    rightPriceScale: { borderColor: '#30363d' },
+    timeScale: { borderColor: '#30363d', timeVisible: true, secondsVisible: false },
+    crosshair: { mode: 0 },
+    width: host.clientWidth, height: 220,
+  });
+  const s = chart.addCandlestickSeries({
+    upColor: '#3fb950', downColor: '#f85149',
+    borderUpColor: '#3fb950', borderDownColor: '#f85149',
+    wickUpColor: '#3fb950', wickDownColor: '#f85149',
+  });
+  charts[pair] = chart;
+  series[pair] = s;
+  seenMarkers[pair] = [];
 
-  const w = s.win_rate || {wins:0,losses:0,total:0};
-  const rate = w.total ? ((w.wins/w.total)*100).toFixed(1) : '-';
-  $('#winrate').innerHTML = `<div style="font-size:24px;">${rate}%</div><div class="muted">${w.wins} wins / ${w.losses} losses / ${w.total} total</div>`;
+  new ResizeObserver(() => chart.applyOptions({ width: host.clientWidth })).observe(host);
+}
 
-  $('#wrstrat tbody').innerHTML = (s.win_rate_by_strategy||[]).map(r => {
-    const rate = r.total ? ((r.wins/r.total)*100).toFixed(1)+'%' : '-';
-    return `<tr><td>${r.strategy}</td><td>${r.wins}</td><td>${r.losses}</td><td>${r.total}</td><td>${rate}</td></tr>`;
-  }).join('') || '<tr><td colspan="5" class="muted">no closed trades</td></tr>';
+async function bootstrapChart(pair) {
+  try {
+    const r = await fetch('/api/klines/' + pair);
+    const data = await r.json();
+    if (Array.isArray(data.candles) && data.candles.length) {
+      series[pair].setData(data.candles);
+    }
+    if (Array.isArray(data.markers) && data.markers.length) {
+      seenMarkers[pair] = data.markers;
+      series[pair].setMarkers(data.markers);
+    }
+  } catch (e) {}
+}
+
+PAIRS.forEach(buildChartCard);
+PAIRS.forEach(bootstrapChart);
+
+function applyKline(p) {
+  const ser = series[p.pair];
+  if (!ser || !p.bar) return;
+  ser.update(p.bar);
+  const cell = document.getElementById('price-' + p.pair);
+  if (cell) cell.textContent = Number(p.bar.close).toFixed(4);
+}
+
+function applyMarker(m) {
+  const list = seenMarkers[m.pair];
+  if (!list) return;
+  list.push({ time: m.time, position: m.position, color: m.color, shape: m.shape, text: m.text });
+  list.sort((a, b) => a.time - b.time);
+  while (list.length > 200) list.shift();
+  series[m.pair].setMarkers(list);
+}
+
+function renderState(s) {
+  const st = s.status || {};
+  let pill = '<span class="pill live">LIVE</span>';
+  if (st.paused) pill = '<span class="pill paused">PAUSED</span>';
+  else if (st.quiet_hours) pill = '<span class="pill quiet">QUIET</span>';
+  $('#meta').innerHTML = `${pill} ${new Date(s.ts).toLocaleTimeString()}`;
+  $('#card-equity').textContent = st.base_equity != null ? Number(st.base_equity).toFixed(2) + ' USDT' : '-';
+  const dailyPnl = st.daily_pnl ?? 0;
+  $('#card-realized').innerHTML = `<span class="${cls(dailyPnl)}">${pn(dailyPnl,2)}</span> <span class="muted">(${((st.daily_pnl_pct||0)*100).toFixed(2)}%)</span>`;
+  $('#card-unrealized').innerHTML = `<span class="${cls(st.unrealized_total)}">${pn(st.unrealized_total,2)}</span>`;
+  const wr = s.win_rate || {wins:0,losses:0,total:0};
+  const rate = wr.total ? ((wr.wins/wr.total)*100).toFixed(1) + '%' : '-';
+  $('#card-winrate').innerHTML = `${rate} <span class="muted" style="font-size:11px;">${wr.wins}/${wr.total}</span>`;
+  $('#card-trades').textContent = st.daily_trade_count ?? 0;
+  $('#card-status').innerHTML = pill;
+
+  $('#positions tbody').innerHTML = (s.open_positions||[]).map(p => `<tr>
+    <td>${p.pair}</td><td>${p.strategy}</td>
+    <td>${pn(p.entry_price)}</td><td>${pn(p.last_price)}</td>
+    <td class="${cls(p.unrealized_pnl)}">${pn(p.unrealized_pnl,2)}</td>
+    <td class="${cls(p.unrealized_pnl_pct)}">${p.unrealized_pnl_pct!=null?p.unrealized_pnl_pct.toFixed(2)+'%':'-'}</td>
+  </tr>`).join('') || '<tr><td colspan="6" class="muted">no open positions</td></tr>';
 
   $('#trades tbody').innerHTML = (s.recent_trades||[]).map(t => `<tr>
-    <td>${t.id}</td><td>${t.pair}</td><td>${t.strategy}</td><td>${t.side}</td>
+    <td>${t.id}</td><td>${t.pair}</td><td>${t.strategy}</td>
     <td>${pn(t.entry_price)}</td><td>${pn(t.exit_price)}</td>
-    <td class="${cls(t.pnl)}">${pn(t.pnl,4)}</td><td>${t.status}</td>
+    <td class="${cls(t.pnl)}">${pn(t.pnl,2)}</td>
+    <td>${t.status}</td>
+    <td class="reason" title="${(t.entry_reason||'') + ' | ' + (t.exit_reason||'')}">${t.entry_reason||''}</td>
   </tr>`).join('') || '<tr><td colspan="8" class="muted">no trades yet</td></tr>';
 }
 
 const es = new EventSource('/events');
-es.onmessage = (ev) => { try { render(JSON.parse(ev.data)); } catch (e) {} };
+es.addEventListener('state', (ev) => { try { renderState(JSON.parse(ev.data)); } catch {} });
+es.addEventListener('kline', (ev) => { try { applyKline(JSON.parse(ev.data)); } catch {} });
+es.addEventListener('marker', (ev) => { try { applyMarker(JSON.parse(ev.data)); } catch {} });
 es.onerror = () => { $('#meta').textContent = 'SSE disconnected, retrying...'; };
 </script>
 </body>
