@@ -55,17 +55,18 @@ async function snapshotEquity(rest, risk) {
   }
 }
 
-function waitForAllPairsReady(marketState, pairs, timeoutMs = 30_000) {
-  return new Promise((resolve, reject) => {
-    if (marketState.allPairsReady()) return resolve();
+function waitForAllPairsReady(marketState, pairs, timeoutMs = 10_000) {
+  return new Promise((resolve) => {
+    if (marketState.allPairsReady()) return resolve({ ready: pairs.slice(), missing: [] });
     const timer = setTimeout(() => {
+      const ready = pairs.filter((p) => marketState.firstEventByPair[p]);
       const missing = pairs.filter((p) => !marketState.firstEventByPair[p]);
-      reject(new Error(`WS pairs not ready: ${missing.join(', ')}`));
+      resolve({ ready, missing });
     }, timeoutMs);
     marketState.on('firstEvent', () => {
       if (marketState.allPairsReady()) {
         clearTimeout(timer);
-        resolve();
+        resolve({ ready: pairs.slice(), missing: [] });
       }
     });
   });
@@ -90,8 +91,11 @@ async function main() {
   marketState.attach(ws);
   ws.connect();
 
-  await waitForAllPairsReady(marketState, config.pairs);
-  console.log(`[boot] live for ${config.pairs.join(' ')}`);
+  const wsStatus = await waitForAllPairsReady(marketState, config.pairs);
+  console.log(`[boot] live for ${wsStatus.ready.join(' ')}`);
+  if (wsStatus.missing.length) {
+    console.warn(`[boot] no events yet for ${wsStatus.missing.join(' ')} (low testnet activity; will activate when data arrives)`);
+  }
 
   const executor = new Executor({ rest, risk, marketState, symbolFilters: filters });
   const router = new SignalRouter(marketState, executor);

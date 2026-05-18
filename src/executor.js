@@ -28,6 +28,7 @@ class Executor extends EventEmitter {
     this.filters = symbolFilters;
     this.pollTimers = new Map();
     this.imbalanceMonitors = new Map();
+    this.inFlightPairs = new Set();
   }
 
   async handleSignal(sig) {
@@ -40,6 +41,10 @@ class Executor extends EventEmitter {
   }
 
   async execute(sig) {
+    if (this.inFlightPairs.has(sig.pair)) {
+      console.log(`[exec] ${sig.pair} in flight, skip ${sig.strategy}`);
+      return;
+    }
     const gate = this.risk.check(sig);
     if (!gate.ok) {
       console.log(`[risk] reject ${sig.pair} ${sig.strategy} ${sig.side}: ${gate.reason}`);
@@ -51,74 +56,71 @@ class Executor extends EventEmitter {
       return;
     }
 
-    const f = this.filters[sig.pair];
-    if (!f) {
-      console.warn(`[exec] no exchange filters for ${sig.pair}`);
-      return;
-    }
-    const price = this.state.lastPrice(sig.pair) ?? sig.entry;
-    if (!price) {
-      console.warn(`[exec] no price for ${sig.pair}`);
-      return;
-    }
-    const notional = this.risk.positionSizeUsd();
-    let qty = stepFloor(notional / price, f.stepSize);
-    if (qty <= 0) {
-      console.warn(`[exec] qty too small for ${sig.pair}`);
-      return;
-    }
-    if (f.minNotional && qty * price < f.minNotional) {
-      console.warn(`[exec] notional ${(qty * price).toFixed(2)} < minNotional ${f.minNotional} for ${sig.pair}`);
-      return;
-    }
+    this.inFlightPairs.add(sig.pair);
+    this.risk.registerEntry(sig.pair, Date.now());
 
-    const buyResp = await this.rest.marketBuy(sig.pair, qty);
-    const fills = buyResp.fills || [];
-    const filledQty = fills.reduce((a, f) => a + parseFloat(f.qty), 0) || qty;
-    const cost = fills.reduce((a, f) => a + parseFloat(f.price) * parseFloat(f.qty), 0);
-    const avgEntry = filledQty > 0 ? cost / filledQty : price;
-    const sellableQty = stepFloor(filledQty, f.stepSize);
-
-    const { takeProfitPrice, stopLossPrice } = this.risk.computeLevels(avgEntry, sig);
-    const tp = priceTickRound(takeProfitPrice, f.tickSize);
-    const sp = priceTickRound(stopLossPrice, f.tickSize);
-    const sl = priceTickRound(stopLossPrice * 0.999, f.tickSize);
-
-    let ocoId = null;
     try {
-      const oco = await this.rest.ocoSell(sig.pair, sellableQty, tp, sp, sl);
-      ocoId = oco.orderListId?.toString() ?? null;
-    } catch (e) {
-      console.error(`[exec] OCO failed for ${sig.pair}:`, e.message);
+      const f = this.filters[sig.pair];
+      if (!f) { console.warn(`[exec] no exchange filters for ${sig.pair}`); return; }
+      const price = this.state.lastPrice(sig.pair) ?? sig.entry;
+      if (!price) { console.warn(`[exec] no price for ${sig.pair}`); return; }
+      const notional = this.risk.positionSizeUsd();
+      let qty = stepFloor(notional / price, f.stepSize);
+      if (qty <= 0) { console.warn(`[exec] qty too small for ${sig.pair}`); return; }
+      if (f.minNotional && qty * price < f.minNotional) {
+        console.warn(`[exec] notional ${(qty * price).toFixed(2)} < minNotional ${f.minNotional} for ${sig.pair}`);
+        return;
+      }
+
+      const buyResp = await this.rest.marketBuy(sig.pair, qty);
+      const fills = buyResp.fills || [];
+      const filledQty = fills.reduce((a, f) => a + parseFloat(f.qty), 0) || qty;
+      const cost = fills.reduce((a, f) => a + parseFloat(f.price) * parseFloat(f.qty), 0);
+      const avgEntry = filledQty > 0 ? cost / filledQty : price;
+      const sellableQty = stepFloor(filledQty, f.stepSize);
+
+      const { takeProfitPrice, stopLossPrice } = this.risk.computeLevels(avgEntry, sig);
+      const tp = priceTickRound(takeProfitPrice, f.tickSize);
+      const sp = priceTickRound(stopLossPrice, f.tickSize);
+      const sl = priceTickRound(stopLossPrice * 0.999, f.tickSize);
+
+      let ocoId = null;
+      try {
+        const oco = await this.rest.ocoSell(sig.pair, sellableQty, tp, sp, sl);
+        ocoId = oco.orderListId?.toString() ?? null;
+      } catch (e) {
+        console.error(`[exec] OCO failed for ${sig.pair}:`, e.message);
+      }
+
+      const entryTs = Date.now();
+      const tradeRow = db.insertTrade({
+        pair: sig.pair,
+        strategy: sig.strategy,
+        side: 'BUY',
+        entry_price: avgEntry,
+        qty: sellableQty,
+        entry_ts: entryTs,
+        binance_entry_order_id: buyResp.orderId?.toString() ?? null,
+        binance_oco_id: ocoId,
+        entry_reason: sig.reason,
+        tp_price: tp,
+        sl_price: sp,
+      });
+      const tradeId = tradeRow.lastInsertRowid;
+      this.risk.registerEntry(sig.pair, entryTs);
+
+      console.log(`[exec] BUY ${sig.pair} qty=${sellableQty} avg=${avgEntry.toFixed(4)} TP ${tp} SL ${sp} strat=${sig.strategy}`);
+
+      this.emit('tradeOpened', {
+        tradeId, pair: sig.pair, strategy: sig.strategy, side: 'BUY',
+        entry_price: avgEntry, qty: sellableQty, tp, sl, entry_ts: entryTs, reason: sig.reason,
+      });
+
+      if (ocoId) this.startPolling(tradeId, sig.pair, ocoId);
+      if (sig.strategy === 'imbalance' && sig.stateExit) this.startImbalanceMonitor(tradeId, sig.pair, sig.stateExit);
+    } finally {
+      this.inFlightPairs.delete(sig.pair);
     }
-
-    const entryTs = Date.now();
-    const tradeRow = db.insertTrade({
-      pair: sig.pair,
-      strategy: sig.strategy,
-      side: 'BUY',
-      entry_price: avgEntry,
-      qty: sellableQty,
-      entry_ts: entryTs,
-      binance_entry_order_id: buyResp.orderId?.toString() ?? null,
-      binance_oco_id: ocoId,
-      entry_reason: sig.reason,
-      tp_price: tp,
-      sl_price: sp,
-    });
-    const tradeId = tradeRow.lastInsertRowid;
-
-    this.risk.registerEntry(sig.pair, entryTs);
-
-    console.log(`[exec] BUY ${sig.pair} qty=${sellableQty} avg=${avgEntry.toFixed(4)} TP ${tp} SL ${sp} strat=${sig.strategy}`);
-
-    this.emit('tradeOpened', {
-      tradeId, pair: sig.pair, strategy: sig.strategy, side: 'BUY',
-      entry_price: avgEntry, qty: sellableQty, tp, sl, entry_ts: entryTs, reason: sig.reason,
-    });
-
-    if (ocoId) this.startPolling(tradeId, sig.pair, ocoId);
-    if (sig.strategy === 'imbalance' && sig.stateExit) this.startImbalanceMonitor(tradeId, sig.pair, sig.stateExit);
   }
 
   startPolling(tradeId, pair, ocoId) {
