@@ -1,46 +1,80 @@
 'use strict';
 
 const { EventEmitter } = require('events');
-const config = require('../config');
 
-const KLINE_HISTORY = 200;
+const KLINE_HISTORY_1M = 300;
+const KLINE_HISTORY_15M = 200;
 
 class MarketState extends EventEmitter {
   constructor(pairs) {
     super();
     this.pairs = pairs;
     this.byPair = {};
+    this.firstEventByPair = {};
     for (const p of pairs) {
       this.byPair[p] = {
-        klines: [],
+        klines1m: [],
+        klines15m: [],
+        currentBar1m: null,
+        currentBar15m: null,
         lastPrice: null,
         book: { bids: [], asks: [], ts: 0 },
         recentTrades: [],
       };
+      this.firstEventByPair[p] = false;
     }
   }
 
   attach(ws) {
-    ws.on('klineClosed', (bar) => this.onKlineClosed(bar));
-    ws.on('klineUpdate', (bar) => this.onKlineUpdate(bar));
+    ws.on('kline1mClosed', (bar) => this.onKlineClosed(bar, '1m'));
+    ws.on('kline1mUpdate', (bar) => this.onKlineUpdate(bar, '1m'));
+    ws.on('kline15mClosed', (bar) => this.onKlineClosed(bar, '15m'));
+    ws.on('kline15mUpdate', (bar) => this.onKlineUpdate(bar, '15m'));
     ws.on('depth', (d) => this.onDepth(d));
     ws.on('aggTrade', (t) => this.onAggTrade(t));
   }
 
-  onKlineClosed(bar) {
-    const s = this.byPair[bar.pair];
-    if (!s) return;
-    s.klines.push(bar);
-    if (s.klines.length > KLINE_HISTORY) s.klines.shift();
-    s.lastPrice = bar.close;
-    this.emit('klineClosed', bar);
+  markFirstEvent(pair) {
+    if (!this.firstEventByPair[pair]) {
+      this.firstEventByPair[pair] = true;
+      this.emit('firstEvent', pair);
+    }
   }
 
-  onKlineUpdate(bar) {
+  allPairsReady() {
+    return this.pairs.every((p) => this.firstEventByPair[p]);
+  }
+
+  onKlineClosed(bar, interval) {
     const s = this.byPair[bar.pair];
     if (!s) return;
-    s.lastPrice = bar.close;
-    this.emit('klineUpdate', bar);
+    if (interval === '1m') {
+      s.klines1m.push(bar);
+      if (s.klines1m.length > KLINE_HISTORY_1M) s.klines1m.shift();
+      s.currentBar1m = null;
+      s.lastPrice = bar.close;
+      this.markFirstEvent(bar.pair);
+      this.emit('kline1mClosed', bar);
+    } else {
+      s.klines15m.push(bar);
+      if (s.klines15m.length > KLINE_HISTORY_15M) s.klines15m.shift();
+      s.currentBar15m = null;
+      this.emit('kline15mClosed', bar);
+    }
+  }
+
+  onKlineUpdate(bar, interval) {
+    const s = this.byPair[bar.pair];
+    if (!s) return;
+    if (interval === '1m') {
+      s.currentBar1m = bar;
+      s.lastPrice = bar.close;
+      this.markFirstEvent(bar.pair);
+      this.emit('kline1mUpdate', bar);
+    } else {
+      s.currentBar15m = bar;
+      this.emit('kline15mUpdate', bar);
+    }
   }
 
   onDepth(d) {
@@ -50,6 +84,7 @@ class MarketState extends EventEmitter {
     if (d.bids.length && d.asks.length) {
       s.lastPrice = (d.bids[0][0] + d.asks[0][0]) / 2;
     }
+    this.markFirstEvent(d.pair);
     this.emit('depth', d);
   }
 
@@ -60,23 +95,25 @@ class MarketState extends EventEmitter {
     s.recentTrades.push(t);
     const cutoff = Date.now() - 60_000;
     while (s.recentTrades.length && s.recentTrades[0].ts < cutoff) s.recentTrades.shift();
+    this.markFirstEvent(t.pair);
     this.emit('aggTrade', t);
   }
 
   get(pair) { return this.byPair[pair]; }
   lastPrice(pair) { return this.byPair[pair]?.lastPrice ?? null; }
+  klines1m(pair) { return this.byPair[pair]?.klines1m || []; }
+  klines15m(pair) { return this.byPair[pair]?.klines15m || []; }
+  book(pair) { return this.byPair[pair]?.book; }
 
-  snapshotForRanker() {
-    const out = {};
-    for (const p of this.pairs) {
-      const s = this.byPair[p];
-      const closes = s.klines.map((k) => k.close);
-      const last = s.lastPrice;
-      const prev = closes.length >= 2 ? closes[closes.length - 2] : last;
-      const pct1m = (prev && last) ? ((last - prev) / prev) * 100 : 0;
-      out[p] = { lastPrice: last, pct1m: +pct1m.toFixed(4) };
-    }
-    return out;
+  chartHistory(pair, n = 200) {
+    const s = this.byPair[pair];
+    if (!s) return [];
+    const closed = s.klines1m.slice(-n);
+    if (s.currentBar1m) closed.push(s.currentBar1m);
+    return closed.map((k) => ({
+      time: Math.floor(k.openTime / 1000),
+      open: k.open, high: k.high, low: k.low, close: k.close,
+    }));
   }
 }
 
