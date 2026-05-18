@@ -67,7 +67,7 @@ class SignalRouter extends EventEmitter {
   onDepth(d) {
     const s = this.state.get(d.pair);
     if (!s) return;
-    const sig = imbalance.evaluate(d.pair, s.book, s.lastPrice);
+    const sig = imbalance.evaluate(d.pair, s.book, s.lastPrice, s.klines15m);
     if (sig) this.dispatch(d.pair, [sig]);
   }
 }

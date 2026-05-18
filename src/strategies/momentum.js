@@ -2,13 +2,15 @@
 
 const { rsi } = require('../indicators/rsi');
 const { ema } = require('../indicators/ema');
+const { isUptrend } = require('../indicators/trend');
 const config = require('../../config');
 
 const cfg = config.strategies.momentum;
 
-function evaluate(pair, klines1m) {
+function evaluate(pair, klines1m, klines15m) {
   const need = Math.max(cfg.rsiPeriod, cfg.volMaPeriod, cfg.emaPeriod) + 2;
   if (klines1m.length < need) return null;
+  if (!isUptrend(klines15m, cfg.trend15mEmaPeriod)) return null;
 
   const closes = klines1m.map((k) => k.close);
   const volumes = klines1m.map((k) => k.volume);
@@ -38,7 +40,7 @@ function evaluate(pair, klines1m) {
       entry: last.close,
       tpPct: cfg.tpPct,
       slPct: cfg.slPct,
-      reason: `momentum: RSI ${rsiPrev.toFixed(2)}->${rsiNow.toFixed(2)}, vol x${volRatio.toFixed(2)}, close ${last.close.toFixed(4)}>EMA9 ${ema9.toFixed(4)}`,
+      reason: `momentum: RSI ${rsiPrev.toFixed(2)}->${rsiNow.toFixed(2)}, vol x${volRatio.toFixed(2)}, close ${last.close.toFixed(4)}>EMA9, 15m uptrend`,
       ts: Date.now(),
     };
   }

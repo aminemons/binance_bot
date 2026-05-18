@@ -29,6 +29,7 @@ class Executor extends EventEmitter {
     this.filters = symbolFilters;
     this.pollTimers = new Map();
     this.imbalanceMonitors = new Map();
+    this.safetyMonitors = new Map();
     this.inFlightPairs = new Set();
     this.lastSkipLog = new Map();
   }
@@ -129,9 +130,43 @@ class Executor extends EventEmitter {
 
       if (ocoId) this.startPolling(tradeId, sig.pair, ocoId);
       if (sig.strategy === 'imbalance' && sig.stateExit) this.startImbalanceMonitor(tradeId, sig.pair, sig.stateExit);
+      this.startSafetyMonitor(tradeId, sig.pair, avgEntry, entryTs);
     } finally {
       this.inFlightPairs.delete(sig.pair);
     }
+  }
+
+  startSafetyMonitor(tradeId, pair, entry, entryTs) {
+    if (this.safetyMonitors.has(tradeId)) return;
+    const cfg = config.safetyMonitor;
+    const state = { armed: false };
+    const timer = setInterval(async () => {
+      const last = this.state.lastPrice(pair);
+      if (!last) return;
+      const pnlPct = (last - entry) / entry;
+      const ageMs = Date.now() - entryTs;
+
+      if (!state.armed && pnlPct >= cfg.breakEvenArmPct) {
+        state.armed = true;
+        log.info(`${pair} BE armed @ ${last.toFixed(4)} (+${(pnlPct * 100).toFixed(2)}%)`);
+      }
+      if (state.armed && pnlPct <= cfg.breakEvenStopPct) {
+        this.stopSafetyMonitor(tradeId);
+        await this.closeTradeById(tradeId, pair, `be_stop @ +${(pnlPct * 100).toFixed(2)}%`);
+        return;
+      }
+      if (!state.armed && ageMs >= cfg.staleLoserAgeMs && pnlPct <= cfg.staleLoserPnlPct) {
+        this.stopSafetyMonitor(tradeId);
+        await this.closeTradeById(tradeId, pair, `stale_loser ${Math.round(ageMs/1000)}s @ ${(pnlPct * 100).toFixed(2)}%`);
+        return;
+      }
+    }, cfg.intervalMs);
+    this.safetyMonitors.set(tradeId, timer);
+  }
+
+  stopSafetyMonitor(tradeId) {
+    const t = this.safetyMonitors.get(tradeId);
+    if (t) { clearInterval(t); this.safetyMonitors.delete(tradeId); }
   }
 
   startPolling(tradeId, pair, ocoId) {
@@ -163,6 +198,7 @@ class Executor extends EventEmitter {
         clearInterval(timer);
         this.pollTimers.delete(tradeId);
         this.stopImbalanceMonitor(tradeId);
+        this.stopSafetyMonitor(tradeId);
       } catch (e) {
         log.error(`poll ${pair} OCO ${ocoId}: ${e.message}`);
       }
@@ -215,6 +251,8 @@ class Executor extends EventEmitter {
       db.closeTrade({ id: tradeId, exit_price: exitPrice, exit_ts: closedAt, pnl, pnl_pct: pnlPct, exit_reason: reason });
       const t = this.pollTimers.get(tradeId);
       if (t) { clearInterval(t); this.pollTimers.delete(tradeId); }
+      this.stopImbalanceMonitor(tradeId);
+      this.stopSafetyMonitor(tradeId);
       log.close({ pair, strategy: trade.strategy, entry: trade.entry_price, exit: exitPrice, pnl, pnlPct, durationSec: Math.round((closedAt - trade.entry_ts) / 1000), reason });
       this.emit('tradeClosed', { tradeId, pair, exit_price: exitPrice, exit_ts: closedAt, pnl, pnl_pct: pnlPct, exit_reason: reason });
     } catch (e) {
