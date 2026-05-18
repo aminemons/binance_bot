@@ -5,37 +5,38 @@ const config = require('../../config');
 const cfg = config.strategies.imbalance;
 const lastEvalAt = {};
 
+function computeRatio(book) {
+  if (!book || !book.bids?.length || !book.asks?.length) return null;
+  const bidQty = book.bids.slice(0, cfg.levels).reduce((a, [, q]) => a + q, 0);
+  const askQty = book.asks.slice(0, cfg.levels).reduce((a, [, q]) => a + q, 0);
+  if (bidQty <= 0 || askQty <= 0) return null;
+  return bidQty / askQty;
+}
+
 function evaluate(pair, book, lastPrice) {
   const now = Date.now();
   if (lastEvalAt[pair] && now - lastEvalAt[pair] < cfg.throttleMs) return null;
-  if (!book || !book.bids?.length || !book.asks?.length) return null;
   lastEvalAt[pair] = now;
 
-  const bidQty = book.bids.slice(0, cfg.levels).reduce((a, [, q]) => a + q, 0);
-  const askQty = book.asks.slice(0, cfg.levels).reduce((a, [, q]) => a + q, 0);
-  if (askQty <= 0 || bidQty <= 0) return null;
-  const ratio = bidQty / askQty;
+  const ratio = computeRatio(book);
+  if (ratio == null) return null;
 
-  if (ratio >= cfg.buyRatio) {
-    const conf = Math.min(1, 0.45 + Math.log2(ratio) * 0.18);
+  if (ratio >= cfg.entryRatio) {
+    const entry = lastPrice ?? book.asks[0][0];
     return {
-      pair, strategy: 'imbalance', side: 'BUY',
-      confidence: +conf.toFixed(3), entry: lastPrice ?? book.asks[0][0],
-      reason: `book bid/ask ${ratio.toFixed(2)}`,
+      pair,
+      strategy: 'imbalance',
+      priority: cfg.priority,
+      side: 'BUY',
+      entry,
+      tpPct: cfg.tpPct,
+      slPct: cfg.slPct,
+      reason: `imbalance: bid/ask ratio ${ratio.toFixed(2)} (>= ${cfg.entryRatio})`,
       ts: now,
-    };
-  }
-  if (ratio <= cfg.sellRatio) {
-    const inv = 1 / ratio;
-    const conf = Math.min(1, 0.45 + Math.log2(inv) * 0.18);
-    return {
-      pair, strategy: 'imbalance', side: 'SELL',
-      confidence: +conf.toFixed(3), entry: lastPrice ?? book.bids[0][0],
-      reason: `book bid/ask ${ratio.toFixed(2)}`,
-      ts: now,
+      stateExit: { type: 'imbalance_drop', threshold: cfg.exitRatio, confirmTicks: cfg.exitConfirmTicks },
     };
   }
   return null;
 }
 
-module.exports = { evaluate };
+module.exports = { evaluate, computeRatio };
