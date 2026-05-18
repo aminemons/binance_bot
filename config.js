@@ -11,11 +11,11 @@ module.exports = {
 
   risk: {
     maxOpen: 5,
-    perTradePct: 0.10,
+    perTradePct: 0.15,
     slPct: 0.0025,
     tpPctMin: 0.005,
     dailyLossPausePct: 0.05,
-    cooldownMs: 180_000,
+    cooldownMs: 60_000,
     quietHoursUtc: { start: 0, end: 4 },
     onePerPair: true,
   },

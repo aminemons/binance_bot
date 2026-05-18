@@ -11,6 +11,7 @@ const SignalRouter = require('./strategies/runner');
 const RiskGate = require('./risk');
 const Executor = require('./executor');
 const dashboard = require('./dashboard/server');
+const log = require('./log');
 
 function requireEnv(name) {
   const v = process.env[name];
@@ -78,7 +79,7 @@ async function main() {
 
   const rest = new BinanceRest({ apiKey, apiSecret });
   const equity = await fetchEquity(rest);
-  console.log(`[boot] portfolio balance = ${equity.toFixed(2)} USDT`);
+  log.boot(`portfolio balance = ${equity.toFixed(2)} USDT`);
 
   const info = await rest.exchangeInfo(config.pairs);
   const filters = parseFilters(info, config.pairs);
@@ -92,9 +93,9 @@ async function main() {
   ws.connect();
 
   const wsStatus = await waitForAllPairsReady(marketState, config.pairs);
-  console.log(`[boot] live for ${wsStatus.ready.join(' ')}`);
+  log.boot(`live for ${wsStatus.ready.join(' ')}`);
   if (wsStatus.missing.length) {
-    console.warn(`[boot] no events yet for ${wsStatus.missing.join(' ')} (low testnet activity; will activate when data arrives)`);
+    log.warn(`no events yet for ${wsStatus.missing.join(' ')} (low testnet activity; will activate when data arrives)`);
   }
 
   const executor = new Executor({ rest, risk, marketState, symbolFilters: filters });

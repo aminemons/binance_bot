@@ -1,0 +1,7 @@
+{
+  "permissions": {
+    "allow": [
+      "PowerShell($pids = \\(Get-NetTCPConnection -LocalPort 3000 -State Listen -ErrorAction SilentlyContinue\\).OwningProcess | Sort-Object -Unique; if \\($pids\\) { foreach \\($p in $pids\\) { Stop-Process -Id $p -Force -ErrorAction SilentlyContinue } }; Start-Sleep -Seconds 1; if \\(Get-NetTCPConnection -LocalPort 3000 -State Listen -ErrorAction SilentlyContinue\\) { \"still listening\" } else { \"port 3000 free\" })"
+    ]
+  }
+}

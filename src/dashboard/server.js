@@ -5,24 +5,72 @@ const express = require('express');
 const db = require('../db');
 const config = require('../../config');
 
+function computeAggregates(allClosed) {
+  let totalPnl = 0, wins = 0, losses = 0, flat = 0, totalVolume = 0;
+  let biggestWin = 0, biggestLoss = 0;
+  let totalDuration = 0, durSamples = 0;
+  let curStreak = 0, curStreakWin = false, bestWinStreak = 0, bestLossStreak = 0;
+  let lastWin = null;
+  for (const t of allClosed) {
+    const pnl = t.pnl ?? 0;
+    totalPnl += pnl;
+    if (t.entry_price && t.qty) totalVolume += t.entry_price * t.qty;
+    if (pnl > 0) {
+      wins += 1;
+      if (pnl > biggestWin) biggestWin = pnl;
+    } else if (pnl < 0) {
+      losses += 1;
+      if (pnl < biggestLoss) biggestLoss = pnl;
+    } else flat += 1;
+    if (t.entry_ts && t.exit_ts) {
+      totalDuration += (t.exit_ts - t.entry_ts);
+      durSamples += 1;
+    }
+    const w = pnl > 0;
+    if (lastWin == null || lastWin === w) curStreak += 1; else curStreak = 1;
+    lastWin = w;
+    if (w && curStreak > bestWinStreak) bestWinStreak = curStreak;
+    if (!w && pnl < 0 && curStreak > bestLossStreak) bestLossStreak = curStreak;
+    curStreakWin = w;
+  }
+  return {
+    total_trades: allClosed.length,
+    wins, losses, flat,
+    biggest_win: biggestWin,
+    biggest_loss: biggestLoss,
+    total_volume: totalVolume,
+    avg_duration_sec: durSamples ? Math.round(totalDuration / durSamples / 1000) : 0,
+    cur_streak_count: curStreak,
+    cur_streak_win: curStreakWin,
+    best_win_streak: bestWinStreak,
+    best_loss_streak: bestLossStreak,
+    total_realized: totalPnl,
+  };
+}
+
 function buildState(marketState, risk) {
   const open = db.openTrades().map((t) => {
     const last = marketState.lastPrice(t.pair);
     const unrealized = last ? (last - t.entry_price) * t.qty : null;
     const unrealizedPct = last ? ((last - t.entry_price) / t.entry_price) * 100 : null;
-    return { ...t, last_price: last, unrealized_pnl: unrealized, unrealized_pnl_pct: unrealizedPct };
+    const ageSec = t.entry_ts ? Math.round((Date.now() - t.entry_ts) / 1000) : null;
+    return { ...t, last_price: last, unrealized_pnl: unrealized, unrealized_pnl_pct: unrealizedPct, age_sec: ageSec };
   });
   const totalUnrealized = open.reduce((a, t) => a + (t.unrealized_pnl || 0), 0);
   const realizedToday = db.realizedToday();
   const wr = db.winRate();
   const wrByStrat = db.winRateByStrategy();
-  const recent = db.recentTrades(50);
+  const recent = db.recentTrades(100);
+  const allClosed = recent.filter((t) => t.status === 'closed');
+  const agg = computeAggregates(allClosed);
   const pnlByPair = db.pnlByPair();
+  const equity = (risk.baseEquity || 0) + totalUnrealized;
   return {
     ts: Date.now(),
     pairs: config.pairs,
     status: {
       base_equity: risk.baseEquity,
+      equity_now: equity,
       paused: risk.isPaused(),
       quiet_hours: risk.inQuietHours(),
       daily_pnl: realizedToday,
@@ -30,12 +78,15 @@ function buildState(marketState, risk) {
       daily_trade_count: db.dailyTradeCount(),
       position_size_usd: risk.positionSizeUsd(),
       unrealized_total: totalUnrealized,
+      total_realized: agg.total_realized,
+      total_roi_pct: risk.baseEquity ? (agg.total_realized / risk.baseEquity) : 0,
     },
+    aggregates: agg,
     open_positions: open,
     pnl_by_pair: pnlByPair,
     win_rate: wr,
     win_rate_by_strategy: wrByStrat,
-    recent_trades: recent,
+    recent_trades: recent.slice(0, 50),
     prices: Object.fromEntries(config.pairs.map((p) => [p, marketState.lastPrice(p)])),
   };
 }

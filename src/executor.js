@@ -4,6 +4,7 @@ const { EventEmitter } = require('events');
 const db = require('./db');
 const { computeRatio } = require('./strategies/imbalance');
 const config = require('../config');
+const log = require('./log');
 
 function stepFloor(value, step) {
   if (!step || step <= 0) return value;
@@ -42,12 +43,12 @@ class Executor extends EventEmitter {
 
   async execute(sig) {
     if (this.inFlightPairs.has(sig.pair)) {
-      console.log(`[exec] ${sig.pair} in flight, skip ${sig.strategy}`);
+      log.skip(`${sig.pair} ${sig.strategy} in flight`);
       return;
     }
     const gate = this.risk.check(sig);
     if (!gate.ok) {
-      console.log(`[risk] reject ${sig.pair} ${sig.strategy} ${sig.side}: ${gate.reason}`);
+      log.skip(`${sig.pair} ${sig.strategy} ${sig.side}: ${gate.reason}`);
       return;
     }
 
@@ -109,7 +110,7 @@ class Executor extends EventEmitter {
       const tradeId = tradeRow.lastInsertRowid;
       this.risk.registerEntry(sig.pair, entryTs);
 
-      console.log(`[exec] BUY ${sig.pair} qty=${sellableQty} avg=${avgEntry.toFixed(4)} TP ${tp} SL ${sp} strat=${sig.strategy}`);
+      log.entry({ pair: sig.pair, strategy: sig.strategy, qty: sellableQty, price: avgEntry, tp, sl: sp, reason: sig.reason });
 
       this.emit('tradeOpened', {
         tradeId, pair: sig.pair, strategy: sig.strategy, side: 'BUY',
@@ -140,19 +141,20 @@ class Executor extends EventEmitter {
           const pnl = (exitPrice - trade.entry_price) * trade.qty;
           const pnlPct = (exitPrice - trade.entry_price) / trade.entry_price;
           const exitReason = filled.type === 'LIMIT_MAKER' || filled.type === 'LIMIT' ? 'tp_filled' : 'sl_filled';
-          db.closeTrade({ id: tradeId, exit_price: exitPrice, exit_ts: Date.now(), pnl, pnl_pct: pnlPct, exit_reason: exitReason });
-          console.log(`[exec] closed ${pair} pnl=${pnl.toFixed(4)} (${(pnlPct * 100).toFixed(3)}%) reason=${exitReason}`);
-          this.emit('tradeClosed', { tradeId, pair, exit_price: exitPrice, exit_ts: Date.now(), pnl, pnl_pct: pnlPct, exit_reason: exitReason });
+          const closedAt = Date.now();
+          db.closeTrade({ id: tradeId, exit_price: exitPrice, exit_ts: closedAt, pnl, pnl_pct: pnlPct, exit_reason: exitReason });
+          log.close({ pair, strategy: trade.strategy, entry: trade.entry_price, exit: exitPrice, pnl, pnlPct, durationSec: Math.round((closedAt - trade.entry_ts) / 1000), reason: exitReason });
+          this.emit('tradeClosed', { tradeId, pair, exit_price: exitPrice, exit_ts: closedAt, pnl, pnl_pct: pnlPct, exit_reason: exitReason });
         } else if (trade) {
           db.cancelTrade(tradeId, Date.now(), 'oco_ended');
-          console.log(`[exec] ${pair} OCO ${ocoId} ended without fill`);
+          log.warn(`${pair} OCO ${ocoId} ended without fill`);
           this.emit('tradeClosed', { tradeId, pair, exit_reason: 'oco_ended', exit_ts: Date.now() });
         }
         clearInterval(timer);
         this.pollTimers.delete(tradeId);
         this.stopImbalanceMonitor(tradeId);
       } catch (e) {
-        console.error(`[exec] poll ${pair} OCO ${ocoId}:`, e.message);
+        log.error(`poll ${pair} OCO ${ocoId}: ${e.message}`);
       }
     }, 2000);
     this.pollTimers.set(tradeId, timer);
@@ -199,13 +201,14 @@ class Executor extends EventEmitter {
       const exitPrice = filledQty > 0 ? cost / filledQty : this.state.lastPrice(pair);
       const pnl = (exitPrice - trade.entry_price) * trade.qty;
       const pnlPct = (exitPrice - trade.entry_price) / trade.entry_price;
-      db.closeTrade({ id: tradeId, exit_price: exitPrice, exit_ts: Date.now(), pnl, pnl_pct: pnlPct, exit_reason: reason });
+      const closedAt = Date.now();
+      db.closeTrade({ id: tradeId, exit_price: exitPrice, exit_ts: closedAt, pnl, pnl_pct: pnlPct, exit_reason: reason });
       const t = this.pollTimers.get(tradeId);
       if (t) { clearInterval(t); this.pollTimers.delete(tradeId); }
-      console.log(`[exec] forced close ${pair} pnl=${pnl.toFixed(4)} reason=${reason}`);
-      this.emit('tradeClosed', { tradeId, pair, exit_price: exitPrice, exit_ts: Date.now(), pnl, pnl_pct: pnlPct, exit_reason: reason });
+      log.close({ pair, strategy: trade.strategy, entry: trade.entry_price, exit: exitPrice, pnl, pnlPct, durationSec: Math.round((closedAt - trade.entry_ts) / 1000), reason });
+      this.emit('tradeClosed', { tradeId, pair, exit_price: exitPrice, exit_ts: closedAt, pnl, pnl_pct: pnlPct, exit_reason: reason });
     } catch (e) {
-      console.error(`[exec] forced close ${pair} failed:`, e.message);
+      log.error(`forced close ${pair} failed: ${e.message}`);
     }
   }
 
