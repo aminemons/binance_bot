@@ -192,10 +192,21 @@ function start({ marketState, risk, executor }) {
     });
   }
 
-  return new Promise((resolve) => {
-    const server = app.listen(config.dashboard.port, () => {
-      console.log(`[dashboard] listening on http://localhost:${config.dashboard.port}`);
+  const port = parseInt(process.env.PORT || config.dashboard.port, 10);
+  return new Promise((resolve, reject) => {
+    const server = app.listen(port);
+    server.on('listening', () => {
+      console.log(`[dashboard] listening on http://localhost:${port}`);
       resolve(server);
+    });
+    server.on('error', (err) => {
+      if (err.code === 'EADDRINUSE') {
+        console.error(`[dashboard] port ${port} is already in use (probably a stale bot from a previous run).`);
+        console.error(`[dashboard] fix:  Get-NetTCPConnection -LocalPort ${port} -State Listen | %{ Stop-Process -Id $_.OwningProcess -Force }`);
+        console.error(`[dashboard] or:   $env:PORT=3001; node src/index.js`);
+        process.exit(1);
+      }
+      reject(err);
     });
   });
 }
