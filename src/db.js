@@ -56,20 +56,29 @@ db.exec(`
   );
 `);
 
+function tableHas(table, column) {
+  const rows = db.prepare(`PRAGMA table_info(${table})`).all();
+  return rows.some((r) => r.name === column);
+}
+if (!tableHas('trades', 'entry_reason')) db.exec(`ALTER TABLE trades ADD COLUMN entry_reason TEXT`);
+if (!tableHas('trades', 'exit_reason')) db.exec(`ALTER TABLE trades ADD COLUMN exit_reason TEXT`);
+if (!tableHas('trades', 'tp_price')) db.exec(`ALTER TABLE trades ADD COLUMN tp_price REAL`);
+if (!tableHas('trades', 'sl_price')) db.exec(`ALTER TABLE trades ADD COLUMN sl_price REAL`);
+
 const stmts = {
   insertSignal: db.prepare(`
-    INSERT INTO signals (ts, pair, strategy, side, raw_confidence, reason, claude_decision, claude_confidence, claude_note)
-    VALUES (@ts, @pair, @strategy, @side, @raw_confidence, @reason, @claude_decision, @claude_confidence, @claude_note)
+    INSERT INTO signals (ts, pair, strategy, side, raw_confidence, reason)
+    VALUES (@ts, @pair, @strategy, @side, @raw_confidence, @reason)
   `),
   insertTrade: db.prepare(`
-    INSERT INTO trades (pair, strategy, side, entry_price, qty, entry_ts, status, binance_entry_order_id, binance_oco_id, claude_confidence, claude_reasoning)
-    VALUES (@pair, @strategy, @side, @entry_price, @qty, @entry_ts, 'open', @binance_entry_order_id, @binance_oco_id, @claude_confidence, @claude_reasoning)
+    INSERT INTO trades (pair, strategy, side, entry_price, qty, entry_ts, status, binance_entry_order_id, binance_oco_id, entry_reason, tp_price, sl_price)
+    VALUES (@pair, @strategy, @side, @entry_price, @qty, @entry_ts, 'open', @binance_entry_order_id, @binance_oco_id, @entry_reason, @tp_price, @sl_price)
   `),
   closeTrade: db.prepare(`
-    UPDATE trades SET exit_price = @exit_price, exit_ts = @exit_ts, pnl = @pnl, pnl_pct = @pnl_pct, status = 'closed'
+    UPDATE trades SET exit_price = @exit_price, exit_ts = @exit_ts, pnl = @pnl, pnl_pct = @pnl_pct, status = 'closed', exit_reason = @exit_reason
     WHERE id = @id
   `),
-  cancelTrade: db.prepare(`UPDATE trades SET status = 'cancelled', exit_ts = @exit_ts WHERE id = @id`),
+  cancelTrade: db.prepare(`UPDATE trades SET status = 'cancelled', exit_ts = @exit_ts, exit_reason = @exit_reason WHERE id = @id`),
   openTrades: db.prepare(`SELECT * FROM trades WHERE status = 'open' ORDER BY entry_ts DESC`),
   openTradeByPair: db.prepare(`SELECT * FROM trades WHERE status = 'open' AND pair = ? LIMIT 1`),
   recentTrades: db.prepare(`SELECT * FROM trades ORDER BY id DESC LIMIT ?`),
@@ -97,6 +106,13 @@ const stmts = {
     FROM trades WHERE status = 'closed' GROUP BY strategy
   `),
   realizedSince: db.prepare(`SELECT COALESCE(SUM(pnl), 0) AS pnl FROM trades WHERE status='closed' AND exit_ts >= ?`),
+  dailyTradeCount: db.prepare(`SELECT COUNT(*) AS n FROM trades WHERE entry_ts >= ?`),
+  lastEntryTsForPair: db.prepare(`SELECT MAX(entry_ts) AS ts FROM trades WHERE pair = ?`),
+  markersForPair: db.prepare(`
+    SELECT id, pair, strategy, side, entry_price, exit_price, entry_ts, exit_ts, status, pnl
+    FROM trades WHERE pair = ? AND entry_ts >= ?
+    ORDER BY entry_ts ASC
+  `),
 };
 
 function utcDayStart(ts = Date.now()) {
@@ -109,7 +125,7 @@ module.exports = {
   insertSignal: (row) => stmts.insertSignal.run(row),
   insertTrade: (row) => stmts.insertTrade.run(row),
   closeTrade: (row) => stmts.closeTrade.run(row),
-  cancelTrade: (id, exitTs) => stmts.cancelTrade.run({ id, exit_ts: exitTs }),
+  cancelTrade: (id, exitTs, exitReason) => stmts.cancelTrade.run({ id, exit_ts: exitTs, exit_reason: exitReason }),
   openTrades: () => stmts.openTrades.all(),
   openTradeByPair: (pair) => stmts.openTradeByPair.get(pair),
   recentTrades: (n = 50) => stmts.recentTrades.all(n),
@@ -119,5 +135,8 @@ module.exports = {
   winRate: () => stmts.winRate.get(),
   winRateByStrategy: () => stmts.winRateByStrategy.all(),
   realizedToday: () => stmts.realizedSince.get(utcDayStart()).pnl,
+  dailyTradeCount: () => stmts.dailyTradeCount.get(utcDayStart()).n,
+  lastEntryTsForPair: (pair) => stmts.lastEntryTsForPair.get(pair).ts,
+  markersForPair: (pair, sinceTs) => stmts.markersForPair.all(pair, sinceTs),
   utcDayStart,
 };
