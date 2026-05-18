@@ -20,6 +20,7 @@ class BinanceWs extends EventEmitter {
     for (const p of this.pairs) {
       const lower = p.toLowerCase();
       streams.push(`${lower}@kline_1m`);
+      streams.push(`${lower}@kline_15m`);
       streams.push(`${lower}@depth20@100ms`);
       streams.push(`${lower}@aggTrade`);
     }
@@ -60,10 +61,11 @@ class BinanceWs extends EventEmitter {
   route(stream, data) {
     const [lowerPair, kind] = stream.split('@');
     const pair = lowerPair.toUpperCase();
-    if (kind === 'kline_1m') {
+    if (kind === 'kline_1m' || kind === 'kline_15m') {
       const k = data.k;
       const bar = {
         pair,
+        interval: k.i,
         openTime: k.t,
         closeTime: k.T,
         open: parseFloat(k.o),
@@ -73,8 +75,9 @@ class BinanceWs extends EventEmitter {
         volume: parseFloat(k.v),
         closed: !!k.x,
       };
-      if (bar.closed) this.emit('klineClosed', bar);
-      else this.emit('klineUpdate', bar);
+      const suffix = kind === 'kline_15m' ? '15m' : '1m';
+      if (bar.closed) this.emit(`kline${suffix}Closed`, bar);
+      else this.emit(`kline${suffix}Update`, bar);
     } else if (kind === 'depth20' || kind.startsWith('depth20')) {
       this.emit('depth', {
         pair,
