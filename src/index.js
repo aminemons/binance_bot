@@ -7,8 +7,7 @@ const db = require('./db');
 const BinanceWs = require('./binance/ws');
 const BinanceRest = require('./binance/rest');
 const MarketState = require('./state');
-const StrategyRunner = require('./strategies/runner');
-const Ranker = require('./ranker');
+const SignalRouter = require('./strategies/runner');
 const RiskGate = require('./risk');
 const Executor = require('./executor');
 const dashboard = require('./dashboard/server');
@@ -42,9 +41,7 @@ async function fetchEquity(rest) {
   const acct = await rest.account();
   let total = 0;
   for (const b of acct.balances) {
-    const free = parseFloat(b.free);
-    const locked = parseFloat(b.locked);
-    if (b.asset === 'USDT') total += free + locked;
+    if (b.asset === 'USDT') total += parseFloat(b.free) + parseFloat(b.locked);
   }
   return total;
 }
@@ -58,14 +55,29 @@ async function snapshotEquity(rest, risk) {
   }
 }
 
+function waitForAllPairsReady(marketState, pairs, timeoutMs = 30_000) {
+  return new Promise((resolve, reject) => {
+    if (marketState.allPairsReady()) return resolve();
+    const timer = setTimeout(() => {
+      const missing = pairs.filter((p) => !marketState.firstEventByPair[p]);
+      reject(new Error(`WS pairs not ready: ${missing.join(', ')}`));
+    }, timeoutMs);
+    marketState.on('firstEvent', () => {
+      if (marketState.allPairsReady()) {
+        clearTimeout(timer);
+        resolve();
+      }
+    });
+  });
+}
+
 async function main() {
-  const apiKey = requireEnv('BINANCE_API_KEY');
-  const apiSecret = requireEnv('BINANCE_API_SECRET');
-  const anthropicKey = requireEnv('ANTHROPIC_API_KEY');
+  const apiKey = requireEnv('BINANCE_TESTNET_API_KEY');
+  const apiSecret = requireEnv('BINANCE_TESTNET_SECRET');
 
   const rest = new BinanceRest({ apiKey, apiSecret });
   const equity = await fetchEquity(rest);
-  console.log(`[rest] account fetched, USDT balance = ${equity.toFixed(2)}`);
+  console.log(`[boot] portfolio balance = ${equity.toFixed(2)} USDT`);
 
   const info = await rest.exchangeInfo(config.pairs);
   const filters = parseFilters(info, config.pairs);
@@ -78,47 +90,20 @@ async function main() {
   marketState.attach(ws);
   ws.connect();
 
-  const runner = new StrategyRunner(marketState);
-  runner.attach();
-  runner.on('signal', (sig) => {
-    db.insertSignal({
-      ts: sig.ts, pair: sig.pair, strategy: sig.strategy, side: sig.side,
-      raw_confidence: sig.confidence, reason: sig.reason,
-      claude_decision: null, claude_confidence: null, claude_note: null,
-    });
-  });
+  await waitForAllPairsReady(marketState, config.pairs);
+  console.log(`[boot] live for ${config.pairs.join(' ')}`);
 
   const executor = new Executor({ rest, risk, marketState, symbolFilters: filters });
+  const router = new SignalRouter(marketState, executor);
+  router.start();
 
-  const ranker = new Ranker({
-    apiKey: anthropicKey,
-    runner,
-    openPositionsFn: () => db.openTrades(),
-    stateSnapshotFn: () => marketState.snapshotForRanker(),
-  });
-  ranker.start(async (approved, allDecided) => {
-    for (const sig of allDecided) {
-      if (sig.claude) {
-        db.insertSignal({
-          ts: Date.now(), pair: sig.pair, strategy: sig.strategy, side: sig.side,
-          raw_confidence: sig.confidence, reason: 'ranked: ' + (sig.reason || ''),
-          claude_decision: sig.claude.decision,
-          claude_confidence: sig.claude.confidence,
-          claude_note: sig.claude.note,
-        });
-      }
-    }
-    await executor.handleApproved(approved);
-  });
-
-  await dashboard.start({ marketState, risk });
+  await dashboard.start({ marketState, risk, executor });
 
   setInterval(() => snapshotEquity(rest, risk), 60_000);
   snapshotEquity(rest, risk);
 
   const shutdown = () => {
     console.log('[boot] shutting down');
-    ranker.stop();
     process.exit(0);
   };
   process.on('SIGINT', shutdown);
@@ -126,6 +111,6 @@ async function main() {
 }
 
 main().catch((e) => {
-  console.error('[boot] fatal:', e);
+  console.error('[boot] fatal:', e.message);
   process.exit(1);
 });
