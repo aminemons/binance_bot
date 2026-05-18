@@ -30,6 +30,15 @@ class Executor extends EventEmitter {
     this.pollTimers = new Map();
     this.imbalanceMonitors = new Map();
     this.inFlightPairs = new Set();
+    this.lastSkipLog = new Map();
+  }
+
+  logSkipThrottled(key, msg, windowMs = 5000) {
+    const now = Date.now();
+    const prev = this.lastSkipLog.get(key) || 0;
+    if (now - prev < windowMs) return;
+    this.lastSkipLog.set(key, now);
+    log.skip(msg);
   }
 
   async handleSignal(sig) {
@@ -43,12 +52,13 @@ class Executor extends EventEmitter {
 
   async execute(sig) {
     if (this.inFlightPairs.has(sig.pair)) {
-      log.skip(`${sig.pair} ${sig.strategy} in flight`);
+      this.logSkipThrottled(`${sig.pair}:inflight`, `${sig.pair} ${sig.strategy} in flight`);
       return;
     }
     const gate = this.risk.check(sig);
     if (!gate.ok) {
-      log.skip(`${sig.pair} ${sig.strategy} ${sig.side}: ${gate.reason}`);
+      const reasonKey = gate.reason.split(' ')[0];
+      this.logSkipThrottled(`${sig.pair}:${reasonKey}`, `${sig.pair} ${sig.strategy} ${sig.side}: ${gate.reason}`);
       return;
     }
 
